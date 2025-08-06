@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>This game contains AI generated content.</title>
+    <title>AI Was used to create this game.</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -109,16 +109,16 @@
             max-width: 200px;
             max-height: 200px;
             pointer-events: all;
+            display: flex;
+            justify-content: center;
+            align-items: center;
         }
         #joystick-base {
-            position: absolute;
+            position: relative;
             width: 120px;
             height: 120px;
             background: rgba(128, 128, 128, 0.3);
             border-radius: 50%;
-            left: 50%;
-            top: 50%;
-            transform: translate(-50%, -50%);
         }
         #joystick-knob {
             position: absolute;
@@ -150,6 +150,7 @@
             align-items: center;
             font-size: 1.5rem;
             border: 2px solid white;
+            user-select: none;
         }
 
         /* Show mobile controls on touch devices */
@@ -656,57 +657,78 @@
 
         // --- Mobile Control Listeners ---
         let joystickTouchId = null;
+        let cameraTouchId = null;
         let joystickCenter = { x: 0, y: 0 };
+        let lastCameraTouch = { x: 0, y: 0 };
         const joystickBase = document.getElementById('joystick-base');
 
         joystickArea.addEventListener('touchstart', (e) => {
             e.preventDefault();
             if (joystickTouchId === null) {
                 joystickTouchId = e.changedTouches[0].identifier;
-                const touch = e.changedTouches[0];
-                joystickCenter.x = touch.clientX;
-                joystickCenter.y = touch.clientY;
-                joystickBase.style.left = `${touch.clientX - joystickArea.getBoundingClientRect().left}px`;
-                joystickBase.style.top = `${touch.clientY - joystickArea.getBoundingClientRect().top}px`;
+                joystickCenter.x = e.changedTouches[0].clientX;
+                joystickCenter.y = e.changedTouches[0].clientY;
+            }
+        }, { passive: false });
+
+        gameContainer.addEventListener('touchstart', (e) => {
+            if (e.target.closest('#joystick-area') || e.target.closest('#action-buttons')) {
+                return;
+            }
+            e.preventDefault();
+            if (cameraTouchId === null) {
+                cameraTouchId = e.changedTouches[0].identifier;
+                lastCameraTouch.x = e.changedTouches[0].clientX;
+                lastCameraTouch.y = e.changedTouches[0].clientY;
             }
         }, { passive: false });
 
         window.addEventListener('touchmove', (e) => {
-            if (joystickTouchId !== null) {
-                for (let i = 0; i < e.changedTouches.length; i++) {
-                    if (e.changedTouches[i].identifier === joystickTouchId) {
-                        const touch = e.changedTouches[i];
-                        const deltaX = touch.clientX - joystickCenter.x;
-                        const deltaY = touch.clientY - joystickCenter.y;
-                        const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-                        const maxDistance = joystickBase.clientWidth / 4;
+            e.preventDefault();
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const touch = e.changedTouches[i];
 
-                        const clampedX = Math.min(Math.max(deltaX, -maxDistance), maxDistance);
-                        const clampedY = Math.min(Math.max(deltaY, -maxDistance), maxDistance);
-                        
-                        joystickKnob.style.transform = `translate(${clampedX}px, ${clampedY}px)`;
+                if (touch.identifier === joystickTouchId) {
+                    const deltaX = touch.clientX - joystickCenter.x;
+                    const deltaY = touch.clientY - joystickCenter.y;
+                    const maxDistance = joystickBase.clientWidth / 3;
 
-                        const angle = Math.atan2(deltaX, deltaY);
-                        const threshold = 0.2;
+                    const clampedX = Math.min(Math.max(deltaX, -maxDistance), maxDistance);
+                    const clampedY = Math.min(Math.max(deltaY, -maxDistance), maxDistance);
+                    
+                    joystickKnob.style.transform = `translate(calc(-50% + ${clampedX}px), calc(-50% + ${clampedY}px))`;
 
-                        controls.moveForward = (deltaY < -maxDistance * threshold);
-                        controls.moveBackward = (deltaY > maxDistance * threshold);
-                        controls.moveLeft = (deltaX < -maxDistance * threshold);
-                        controls.moveRight = (deltaX > maxDistance * threshold);
-                    }
+                    const threshold = 0.2;
+                    controls.moveForward = (clampedY < -maxDistance * threshold);
+                    controls.moveBackward = (clampedY > maxDistance * threshold);
+                    controls.moveLeft = (clampedX < -maxDistance * threshold);
+                    controls.moveRight = (clampedX > maxDistance * threshold);
+                }
+
+                if (touch.identifier === cameraTouchId) {
+                    const deltaX = touch.clientX - lastCameraTouch.x;
+                    const deltaY = touch.clientY - lastCameraTouch.y;
+
+                    camera.rotation.y -= deltaX * 0.005;
+                    camera.rotation.x -= deltaY * 0.005;
+                    camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+
+                    lastCameraTouch.x = touch.clientX;
+                    lastCameraTouch.y = touch.clientY;
                 }
             }
         }, { passive: false });
 
         window.addEventListener('touchend', (e) => {
              for (let i = 0; i < e.changedTouches.length; i++) {
-                if (e.changedTouches[i].identifier === joystickTouchId) {
+                const touch = e.changedTouches[i];
+                if (touch.identifier === joystickTouchId) {
                     joystickTouchId = null;
                     joystickKnob.style.transform = `translate(-50%, -50%)`;
-                    joystickBase.style.left = `50%`;
-                    joystickBase.style.top = `50%`;
-                    joystickKnob.style.transform = `translate(-50%, -50%)`;
                     Object.keys(controls).forEach(k => controls[k] = false);
+                }
+                if (touch.identifier === cameraTouchId) {
+                    cameraTouchId = null;
                 }
             }
         });
