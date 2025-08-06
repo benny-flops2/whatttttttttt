@@ -1,1 +1,570 @@
-test
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Procedural House Escape (Bright Edition)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
+    <style>
+        body {
+            font-family: 'Press-Start-2P', cursive;
+            background-color: #1a1a1a;
+            color: #ffffff;
+            margin: 0;
+            overflow: hidden;
+        }
+        #game-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            cursor: pointer;
+        }
+        canvas {
+            display: block;
+        }
+        #ui-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            align-items: center;
+            pointer-events: none;
+        }
+        #message-box, #escape-code-box {
+            background-color: rgba(0, 0, 0, 0.8);
+            border: 1px solid #555;
+            border-radius: 8px;
+            padding: 1.5rem;
+            pointer-events: all;
+            text-align: center;
+        }
+        #message-box {
+             margin-top: 2rem;
+        }
+        #escape-code-box {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 90%;
+            max-width: 500px;
+        }
+        #message-box h1 {
+             font-family: 'Press-Start-2P', cursive;
+             color: #60a5fa; /* Brighter blue color */
+        }
+        #resetButton {
+            margin-bottom: 2rem;
+            pointer-events: all;
+            background-color: #1f2937;
+            border: 1px solid #4b5563;
+            color: #d1d5db;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 2px;
+            height: 2px;
+            background-color: white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+        #win-map-canvas {
+            background-color: #111827;
+            border-radius: 4px;
+        }
+        #minimap-canvas {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            border: 2px solid #9ca3af;
+            background-color: rgba(17, 24, 39, 0.8);
+            pointer-events: all;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container"></div>
+
+    <div id="ui-container">
+        <div id="message-box">
+            <h1 class="text-4xl mb-2">Maze Escape</h1>
+            <p id="message">Find the key. Escape the maze. Click to begin.</p>
+        </div>
+        <div id="escape-code-box" class="hidden">
+            <h2 class="text-2xl text-green-400 mb-4">You Escaped!</h2>
+            <p class="mb-4">Please open a ticket and provide the following code:</p>
+            <p id="escape-code" class="text-3xl text-yellow-400 font-mono mb-4"></p>
+            <p id="escape-timestamp" class="text-xs text-gray-400 mb-4"></p>
+            <canvas id="win-map-canvas"></canvas>
+        </div>
+        <div id="crosshair" style="display: none;"></div>
+        <canvas id="minimap-canvas" class="hidden"></canvas>
+        <button id="resetButton" class="px-6 py-2 rounded-lg shadow-lg">
+            New Game
+        </button>
+    </div>
+
+    <script>
+        // --- Basic Setup ---
+        const gameContainer = document.getElementById('game-container');
+        const messageEl = document.getElementById('message');
+        const resetButton = document.getElementById('resetButton');
+        const crosshair = document.getElementById('crosshair');
+        const messageBox = document.getElementById('message-box');
+        const escapeCodeBox = document.getElementById('escape-code-box');
+        const escapeCodeEl = document.getElementById('escape-code');
+        const escapeTimestampEl = document.getElementById('escape-timestamp');
+        const minimapCanvas = document.getElementById('minimap-canvas');
+        const minimapCtx = minimapCanvas.getContext('2d');
+
+        let scene, camera, renderer, keyObject, doorObject, flashlight;
+        let hasKey = false, gameWon = false, audioStarted = false, isMapVisible = false, minimapWasOpened = false;
+        const clock = new THREE.Clock();
+        let gameMap = [];
+        let gameStartTime = 0;
+        let keyInitialPos, playerInitialPos, doorInitialPos;
+
+        // --- Game World Constants ---
+        const TILE_SIZE = 5;
+        const WALL_HEIGHT = 5;
+        const MAP_WIDTH = 21; // Larger maze, must be odd
+        const MAP_HEIGHT = 21; // Larger maze, must be odd
+
+        // --- Player Controls & Physics ---
+        const controls = { moveForward: false, moveBackward: false, moveLeft: false, moveRight: false };
+        const playerVelocity = new THREE.Vector3();
+        const PLAYER_SPEED_NORMAL = 10.0; // Slower speed before key
+        const PLAYER_SPEED_FAST = 15.0;   // Faster speed after key
+        const PLAYER_HEIGHT = WALL_HEIGHT / 2;
+        const PLAYER_RADIUS = 0.5;
+
+        // --- Sound Engine (Tone.js) ---
+        let sounds = {};
+        function initAudio() {
+            const exploreSynth = new Tone.PolySynth(Tone.Synth, { oscillator: { type: "fmsine" }, envelope: { attack: 0.01, decay: 0.1, sustain: 0.2, release: 1 } }).toDestination();
+            exploreSynth.volume.value = -18;
+            sounds.exploreMusic = new Tone.Sequence((time, note) => { exploreSynth.triggerAttackRelease(note, "1n", time); }, ["C3", "E3", "G3", "B3", "A3", "C4", "E4", "G4", "F3", "A3", "C4", "E4", "G3", "B3", "D4", "F4"], "1m").start(0);
+            
+            const escapeSynth = new Tone.FMSynth({ harmonicity: 3.01, modulationIndex: 14, envelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.5 }, modulationEnvelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.5 } }).toDestination();
+            escapeSynth.volume.value = -15;
+            sounds.escapeMusic = new Tone.Sequence((time, note) => { escapeSynth.triggerAttackRelease(note, "16n", time); }, ["C4", "D4", "Eb4", "D4", "C4", "D4", "Eb4", "D4"], "8n");
+
+            sounds.footsteps = new Tone.NoiseSynth({ noise: { type: 'brown' }, envelope: { attack: 0.005, decay: 0.1, sustain: 0 }, volume: -20, }).toDestination();
+            sounds.keyPickup = new Tone.Synth({ oscillator: { type: 'sine' }, envelope: { attack: 0.01, decay: 0.2, sustain: 0.1, release: 0.5 }, volume: -10 }).toDestination();
+            sounds.doorLocked = new Tone.NoiseSynth({ noise: { type: 'white' }, envelope: { attack: 0.01, decay: 0.05, sustain: 0, release: 0.05 }, volume: -15 }).toDestination();
+            sounds.doorOpen = new Tone.Player({ url: "https://tonejs.github.io/audio/berklee/gong_1.mp3", volume: -5 }).toDestination();
+
+            Tone.Transport.bpm.value = 100;
+            Tone.Transport.start();
+            audioStarted = true;
+        }
+
+        // --- Procedural Map Generation (Randomized DFS) ---
+        function generateMap(width, height) {
+            let map = Array(height).fill(0).map(() => Array(width).fill(0));
+            const stack = [[1, 1]];
+            map[1][1] = 1;
+
+            while (stack.length > 0) {
+                const [cx, cy] = stack[stack.length - 1];
+                const directions = [[0, -2], [0, 2], [-2, 0], [2, 0]];
+                directions.sort(() => Math.random() - 0.5);
+                let moved = false;
+                for (const [dx, dy] of directions) {
+                    const nx = cx + dx, ny = cy + dy;
+                    if (nx > 0 && nx < width - 1 && ny > 0 && ny < height - 1 && map[ny][nx] === 0) {
+                        map[ny][nx] = 1;
+                        map[cy + dy / 2][cx + dx / 2] = 1;
+                        stack.push([nx, ny]);
+                        moved = true;
+                        break;
+                    }
+                }
+                if (!moved) stack.pop();
+            }
+            return map;
+        }
+
+        // --- Initialization ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1f2937);
+            scene.fog = new THREE.Fog(0x1f2937, 15, 70);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.rotation.order = 'YXZ';
+            scene.add(camera);
+
+            flashlight = new THREE.SpotLight(0xffffff, 1.2, 40, Math.PI / 6, 0.3, 1);
+            camera.add(flashlight);
+            flashlight.position.set(0, 0, 0.5);
+            flashlight.target = new THREE.Object3D();
+            camera.add(flashlight.target);
+            flashlight.target.position.set(0,0,-1);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            gameContainer.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.8);
+            scene.add(ambientLight);
+
+            gameMap = generateMap(MAP_WIDTH, MAP_HEIGHT);
+            buildLevel();
+            
+            const minimapSize = Math.min(window.innerWidth, window.innerHeight) * 0.25;
+            minimapCanvas.width = minimapSize;
+            minimapCanvas.height = minimapSize;
+
+            hasKey = false;
+            gameWon = false;
+            isMapVisible = false;
+            minimapWasOpened = false; // Reset map opened flag
+            minimapCanvas.classList.add('hidden');
+            gameStartTime = 0;
+            messageBox.classList.remove('hidden');
+            escapeCodeBox.classList.add('hidden');
+            messageEl.textContent = 'Find the key. Escape the maze. Click to begin.';
+            
+            animate();
+        }
+
+        // --- Level Building ---
+        function buildLevel() {
+            const wallGeometry = new THREE.BoxGeometry(TILE_SIZE, WALL_HEIGHT, TILE_SIZE);
+            const wallMaterial = new THREE.MeshStandardMaterial({ color: 0x4b5563, roughness: 0.9 });
+            const floorGeometry = new THREE.PlaneGeometry(MAP_WIDTH * TILE_SIZE, MAP_HEIGHT * TILE_SIZE);
+            const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x6b7280, roughness: 0.8 });
+            const ceilingMaterial = new THREE.MeshStandardMaterial({ color: 0x374151 });
+
+            const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            scene.add(floor);
+            
+            const ceiling = new THREE.Mesh(floorGeometry, ceilingMaterial);
+            ceiling.position.y = WALL_HEIGHT;
+            ceiling.rotation.x = Math.PI / 2;
+            scene.add(ceiling);
+
+            const floorTiles = [];
+            for (let y = 0; y < MAP_HEIGHT; y++) for (let x = 0; x < MAP_WIDTH; x++) if (gameMap[y][x] === 1) floorTiles.push({x, y});
+
+            playerInitialPos = floorTiles.shift();
+            doorInitialPos = floorTiles.pop();
+            keyInitialPos = floorTiles[Math.floor(Math.random() * floorTiles.length)];
+            
+            for (let y = 0; y < MAP_HEIGHT; y++) {
+                for (let x = 0; x < MAP_WIDTH; x++) {
+                    const worldX = (x - MAP_WIDTH / 2) * TILE_SIZE + TILE_SIZE / 2;
+                    const worldZ = (y - MAP_HEIGHT / 2) * TILE_SIZE + TILE_SIZE / 2;
+
+                    if (gameMap[y][x] === 0) {
+                        const wall = new THREE.Mesh(wallGeometry, wallMaterial);
+                        wall.position.set(worldX, WALL_HEIGHT / 2, worldZ);
+                        scene.add(wall);
+                    } else if (x === playerInitialPos.x && y === playerInitialPos.y) {
+                        camera.position.set(worldX, PLAYER_HEIGHT, worldZ);
+                    } else if (x === doorInitialPos.x && y === doorInitialPos.y) {
+                        const doorGeometry = new THREE.BoxGeometry(TILE_SIZE, WALL_HEIGHT, 0.5);
+                        const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x9ca3af });
+                        doorObject = new THREE.Mesh(doorGeometry, doorMaterial);
+                        doorObject.position.set(worldX, WALL_HEIGHT / 2, worldZ);
+                        scene.add(doorObject);
+                    }
+                }
+            }
+            
+            const keyGeometry = new THREE.TorusGeometry(0.4, 0.15, 8, 24);
+            const keyMaterial = new THREE.MeshStandardMaterial({ color: 0xfbbf24, emissive: 0xf59e0b });
+            keyObject = new THREE.Mesh(keyGeometry, keyMaterial);
+            keyObject.position.set((keyInitialPos.x - MAP_WIDTH / 2) * TILE_SIZE + TILE_SIZE/2, PLAYER_HEIGHT / 2, (keyInitialPos.y - MAP_HEIGHT / 2) * TILE_SIZE + TILE_SIZE/2);
+            keyObject.rotation.x = Math.PI / 2;
+            scene.add(keyObject);
+        }
+
+        // --- Game Loop ---
+        function animate() {
+            if (gameWon) return;
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            updatePlayer(delta);
+            checkInteractions();
+            if (isMapVisible) {
+                drawMiniMap();
+            }
+            if (keyObject) keyObject.rotation.z += delta * 2;
+            renderer.render(scene, camera);
+        }
+
+        function isWall(worldX, worldZ) {
+            const gridX = Math.floor((worldX + (MAP_WIDTH / 2 * TILE_SIZE)) / TILE_SIZE);
+            const gridZ = Math.floor((worldZ + (MAP_HEIGHT / 2 * TILE_SIZE)) / TILE_SIZE);
+            if (gridX < 0 || gridX >= MAP_WIDTH || gridZ < 0 || gridZ >= MAP_HEIGHT) return true;
+            return gameMap[gridZ][gridX] === 0;
+        }
+
+        function updatePlayer(delta) {
+            const currentSpeed = hasKey ? PLAYER_SPEED_FAST : PLAYER_SPEED_NORMAL;
+            const moveSpeed = currentSpeed * delta;
+
+            playerVelocity.set(0, 0, 0);
+            const forward = new THREE.Vector3();
+            camera.getWorldDirection(forward);
+            forward.y = 0;
+            forward.normalize();
+            const right = new THREE.Vector3().crossVectors(forward, camera.up);
+
+            if (controls.moveForward) playerVelocity.add(forward);
+            if (controls.moveBackward) playerVelocity.sub(forward);
+            if (controls.moveLeft) playerVelocity.sub(right);
+            if (controls.moveRight) playerVelocity.add(right);
+            
+            if(audioStarted && playerVelocity.length() > 0) {
+                if(Tone.now() > (sounds.footsteps.lastTrigger || 0) + 0.45) {
+                    sounds.footsteps.triggerAttack();
+                    sounds.footsteps.lastTrigger = Tone.now();
+                }
+            }
+            
+            playerVelocity.normalize().multiplyScalar(moveSpeed);
+            
+            const oldX = camera.position.x;
+            camera.position.x += playerVelocity.x;
+            if (isWall(camera.position.x + PLAYER_RADIUS * Math.sign(playerVelocity.x), camera.position.z)) camera.position.x = oldX;
+            
+            const oldZ = camera.position.z;
+            camera.position.z += playerVelocity.z;
+            if (isWall(camera.position.x, camera.position.z + PLAYER_RADIUS * Math.sign(playerVelocity.z))) camera.position.z = oldZ;
+        }
+        
+        function generateRandomString(length, includeZ) {
+            let result = '';
+            const charsWithZ = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            const charsWithoutZ = 'ABCDEFGHIJKLMNOPQRSTUVWXY0123456789';
+            
+            if (includeZ) {
+                // Generate a string of length-1 from the full character set
+                for (let i = 0; i < length - 1; i++) {
+                    result += charsWithZ.charAt(Math.floor(Math.random() * charsWithZ.length));
+                }
+                // Insert 'Z' at a random position to guarantee its presence
+                const randomPosition = Math.floor(Math.random() * (result.length + 1));
+                result = result.slice(0, randomPosition) + 'Z' + result.slice(randomPosition);
+            } else {
+                // Original logic for no 'Z'
+                for (let i = 0; i < length; i++) {
+                    result += charsWithoutZ.charAt(Math.floor(Math.random() * charsWithoutZ.length));
+                }
+            }
+            return result;
+        }
+
+        function checkInteractions() {
+            if (!hasKey && keyObject && camera.position.distanceTo(keyObject.position) < 2) {
+                hasKey = true;
+                messageEl.textContent = 'You found the key! Find the exit!';
+                scene.remove(keyObject);
+                keyObject = null;
+                doorObject.material.color.setHex(0x22c55e);
+                doorObject.material.emissive.setHex(0x16a34a);
+                if(audioStarted) {
+                    sounds.keyPickup.triggerAttackRelease("C5", "0.5");
+                    sounds.exploreMusic.stop();
+                    sounds.escapeMusic.start(0);
+                    Tone.Transport.bpm.value = 160;
+                }
+            }
+
+            if (!gameWon && hasKey && camera.position.distanceTo(doorObject.position) < 3) {
+                gameWon = true;
+                
+                const escapeTime = clock.getElapsedTime() - gameStartTime;
+                const minutes = String(Math.floor(escapeTime / 60)).padStart(2, '0');
+                const seconds = String(Math.floor(escapeTime % 60)).padStart(2, '0');
+                const randomString = generateRandomString(4, minimapWasOpened);
+                const code = `${minutes}${seconds}BL-${randomString}`;
+                
+                escapeCodeEl.textContent = code;
+                escapeTimestampEl.textContent = `Completed: ${new Date().toLocaleString()}`;
+                
+                messageBox.classList.add('hidden');
+                escapeCodeBox.classList.remove('hidden');
+                minimapCanvas.classList.add('hidden');
+                drawWinMap();
+
+                if(audioStarted) {
+                    sounds.doorOpen.start();
+                    Tone.Transport.stop();
+                    Tone.Transport.cancel();
+                }
+                document.exitPointerLock();
+            } else if (!gameWon && !hasKey && doorObject && camera.position.distanceTo(doorObject.position) < 3) {
+                 if(audioStarted && Tone.now() > (sounds.doorLocked.lastTrigger || 0) + 1) {
+                     sounds.doorLocked.triggerAttack();
+                     sounds.doorLocked.lastTrigger = Tone.now();
+                 }
+            }
+        }
+
+        function drawWinMap() {
+            const mapCanvas = document.getElementById('win-map-canvas');
+            const mapCtx = mapCanvas.getContext('2d');
+            const containerWidth = mapCanvas.parentElement.clientWidth;
+            mapCanvas.width = containerWidth;
+            mapCanvas.height = containerWidth; // Make it square
+
+            const blockSize = containerWidth / MAP_WIDTH;
+
+            for (let y = 0; y < MAP_HEIGHT; y++) {
+                for (let x = 0; x < MAP_WIDTH; x++) {
+                    mapCtx.fillStyle = gameMap[y][x] === 0 ? '#4b5563' : '#9ca3af';
+                    mapCtx.fillRect(x * blockSize, y * blockSize, blockSize, blockSize);
+                }
+            }
+
+            // Draw Key
+            mapCtx.fillStyle = '#f59e0b';
+            mapCtx.beginPath();
+            mapCtx.arc((keyInitialPos.x + 0.5) * blockSize, (keyInitialPos.y + 0.5) * blockSize, blockSize / 2.5, 0, 2 * Math.PI);
+            mapCtx.fill();
+
+            // Draw Door
+            mapCtx.fillStyle = '#22c55e';
+            mapCtx.fillRect(doorInitialPos.x * blockSize, doorInitialPos.y * blockSize, blockSize, blockSize);
+
+            // Draw Player Start
+            mapCtx.fillStyle = '#60a5fa';
+            mapCtx.fillRect(playerInitialPos.x * blockSize, playerInitialPos.y * blockSize, blockSize, blockSize);
+        }
+
+        function drawMiniMap() {
+            const blockSize = minimapCanvas.width / MAP_WIDTH;
+            minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+
+            for (let y = 0; y < MAP_HEIGHT; y++) {
+                for (let x = 0; x < MAP_WIDTH; x++) {
+                    if (gameMap[y][x] === 0) {
+                        minimapCtx.fillStyle = 'rgba(75, 85, 99, 0.7)'; // Wall color
+                        minimapCtx.fillRect(x * blockSize, y * blockSize, blockSize, blockSize);
+                    }
+                }
+            }
+
+            // Draw Door
+            minimapCtx.fillStyle = '#22c55e';
+            minimapCtx.fillRect(doorInitialPos.x * blockSize, doorInitialPos.y * blockSize, blockSize, blockSize);
+
+            // Draw Player Start
+            minimapCtx.fillStyle = '#60a5fa';
+            minimapCtx.fillRect(playerInitialPos.x * blockSize, playerInitialPos.y * blockSize, blockSize, blockSize);
+            
+            // Draw Key if it hasn't been picked up
+            if (!hasKey) {
+                minimapCtx.fillStyle = '#f59e0b';
+                minimapCtx.beginPath();
+                minimapCtx.arc((keyInitialPos.x + 0.5) * blockSize, (keyInitialPos.y + 0.5) * blockSize, blockSize / 2.5, 0, 2 * Math.PI);
+                minimapCtx.fill();
+            }
+
+            // Draw current player position
+            const playerGridX = Math.floor((camera.position.x + (MAP_WIDTH / 2 * TILE_SIZE)) / TILE_SIZE);
+            const playerGridZ = Math.floor((camera.position.z + (MAP_HEIGHT / 2 * TILE_SIZE)) / TILE_SIZE);
+            minimapCtx.fillStyle = '#ef4444'; // Red for current position
+            minimapCtx.fillRect(playerGridX * blockSize, playerGridZ * blockSize, blockSize, blockSize);
+        }
+
+        function resetGame() {
+            if (document.pointerLockElement) document.exitPointerLock();
+            if (audioStarted) {
+                Tone.Transport.stop();
+                Tone.Transport.cancel();
+            }
+            while(scene.children.length > 0) scene.remove(scene.children[0]); 
+            if (renderer.domElement.parentElement) gameContainer.removeChild(renderer.domElement);
+            audioStarted = false;
+            init();
+        }
+
+        // --- Event Listeners ---
+        const onKeyDown = (e) => {
+            switch (e.code) {
+                case 'KeyW': case 'ArrowUp': controls.moveForward = true; break;
+                case 'KeyS': case 'ArrowDown': controls.moveBackward = true; break;
+                case 'KeyA': case 'ArrowLeft': controls.moveLeft = true; break;
+                case 'KeyD': case 'ArrowRight': controls.moveRight = true; break;
+                case 'KeyM':
+                    isMapVisible = !isMapVisible;
+                    if (isMapVisible) {
+                        minimapWasOpened = true; // Flag that the map has been opened
+                    }
+                    minimapCanvas.classList.toggle('hidden', !isMapVisible);
+                    break;
+                case 'KeyR':
+                    resetGame();
+                    break;
+            }
+        };
+        const onKeyUp = (e) => {
+            switch (e.code) {
+                case 'KeyW': case 'ArrowUp': controls.moveForward = false; break;
+                case 'KeyS': case 'ArrowDown': controls.moveBackward = false; break;
+                case 'KeyA': case 'ArrowLeft': controls.moveLeft = false; break;
+                case 'KeyD': case 'ArrowRight': controls.moveRight = false; break;
+            }
+        };
+        const onMouseMove = (e) => {
+            if (document.pointerLockElement === gameContainer) {
+                camera.rotation.y -= e.movementX * 0.002;
+                camera.rotation.x -= e.movementY * 0.002;
+                camera.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, camera.rotation.x));
+            }
+        };
+        const onWindowResize = () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            if(gameWon) drawWinMap(); // Redraw map on resize
+        };
+        
+        gameContainer.addEventListener('click', () => {
+            if (!audioStarted) {
+                Tone.start();
+                initAudio();
+                gameStartTime = clock.getElapsedTime();
+            }
+            if (!gameWon) gameContainer.requestPointerLock();
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === gameContainer) {
+                crosshair.style.display = 'block';
+                document.addEventListener('keydown', onKeyDown);
+                document.addEventListener('keyup', onKeyUp);
+                document.addEventListener('mousemove', onMouseMove);
+            } else {
+                crosshair.style.display = 'none';
+                document.removeEventListener('keydown', onKeyDown);
+                document.removeEventListener('keyup', onKeyUp);
+                document.removeEventListener('mousemove', onMouseMove);
+                Object.keys(controls).forEach(k => controls[k] = false);
+            }
+        });
+
+        resetButton.addEventListener('click', resetGame);
+
+        window.addEventListener('resize', onWindowResize);
+        init();
+    </script>
+</body>
+</html>
