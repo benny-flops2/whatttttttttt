@@ -1,9 +1,9 @@
-<!DOCTYPE html>
+<!DOCTYPE html> 
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>AI Was used to create this game.</title>
+    <title>maze</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -201,6 +201,9 @@
     </div>
 
     <script>
+        // --- IMPORTANT: PASTE YOUR DISCORD WEBHOOK URL HERE ---
+        const DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1403031960934420654/xZZjLmhFZz3qOF0pbyIxp0KuK8JMvBgEQ1Fs8YTeJ869E-MLVeFBjTA_UkFegGqBtg6b"; // e.g. "https://discord.com/api/webhooks/12345/abcdef..."
+
         // --- Basic Setup ---
         const gameContainer = document.getElementById('game-container');
         const messageEl = document.getElementById('message');
@@ -229,8 +232,8 @@
         // --- Game World Constants ---
         const TILE_SIZE = 5;
         const WALL_HEIGHT = 5;
-        const MAP_WIDTH = 21; // Larger maze, must be odd
-        const MAP_HEIGHT = 21; // Larger maze, must be odd
+        const MAP_WIDTH = 31; // Larger maze, must be odd
+        const MAP_HEIGHT = 31; // Larger maze, must be odd
 
         // --- Player Controls & Physics ---
         const controls = { moveForward: false, moveBackward: false, moveLeft: false, moveRight: false };
@@ -446,15 +449,12 @@
             const charsWithoutZ = 'ABCDEFGHIJKLMNOPQRSTUVWXY0123456789';
             
             if (includeZ) {
-                // Generate a string of length-1 from the full character set
                 for (let i = 0; i < length - 1; i++) {
                     result += charsWithZ.charAt(Math.floor(Math.random() * charsWithZ.length));
                 }
-                // Insert 'Z' at a random position to guarantee its presence
                 const randomPosition = Math.floor(Math.random() * (result.length + 1));
                 result = result.slice(0, randomPosition) + 'Z' + result.slice(randomPosition);
             } else {
-                // Original logic for no 'Z'
                 for (let i = 0; i < length; i++) {
                     result += charsWithoutZ.charAt(Math.floor(Math.random() * charsWithoutZ.length));
                 }
@@ -486,6 +486,7 @@
                 const seconds = String(Math.floor(escapeTime % 60)).padStart(2, '0');
                 const randomString = generateRandomString(4, minimapWasOpened);
                 const code = `${minutes}${seconds}BL-${randomString}`;
+                const timeString = `${minutes}m ${seconds}s`;
                 
                 escapeCodeEl.textContent = code;
                 escapeTimestampEl.textContent = `Completed: ${new Date().toLocaleString()}`;
@@ -494,6 +495,7 @@
                 escapeCodeBox.classList.remove('hidden');
                 minimapCanvas.classList.add('hidden');
                 drawWinMap();
+                sendToDiscord(code, minimapWasOpened, timeString);
 
                 if(audioStarted) {
                     sounds.doorOpen.start();
@@ -544,12 +546,15 @@
             const blockSize = minimapCanvas.width / MAP_WIDTH;
             minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
 
+            // Draw floor and walls first with solid colors for clarity
             for (let y = 0; y < MAP_HEIGHT; y++) {
                 for (let x = 0; x < MAP_WIDTH; x++) {
                     if (gameMap[y][x] === 0) {
-                        minimapCtx.fillStyle = 'rgba(75, 85, 99, 0.7)'; // Wall color
-                        minimapCtx.fillRect(x * blockSize, y * blockSize, blockSize, blockSize);
+                        minimapCtx.fillStyle = '#4b5563'; // Solid wall color
+                    } else {
+                        minimapCtx.fillStyle = 'rgba(156, 163, 175, 0.5)'; // More visible floor color
                     }
+                    minimapCtx.fillRect(x * blockSize, y * blockSize, blockSize, blockSize);
                 }
             }
 
@@ -576,6 +581,51 @@
             minimapCtx.fillRect(playerGridX * blockSize, playerGridZ * blockSize, blockSize, blockSize);
         }
 
+        async function sendToDiscord(completionCode, mapWasOpened, completionTime) {
+            if (!DISCORD_WEBHOOK_URL) {
+                console.log("Discord webhook URL not set. Skipping submission.");
+                return;
+            }
+
+            const payload = {
+                embeds: [{
+                    title: "Maze Completion Report",
+                    color: 3066993,
+                    timestamp: new Date().toISOString(),
+                    fields: [{
+                        name: "Completion Code",
+                        value: `\`\`\`${completionCode}\`\`\``,
+                        inline: false
+                    }, {
+                        name: "Completion Time",
+                        value: completionTime,
+                        inline: true
+                    }, {
+                        name: "Minimap Opened?",
+                        value: mapWasOpened ? "Yes" : "No",
+                        inline: true
+                    }, {
+                        name: "Maze Size",
+                        value: `${MAP_WIDTH}x${MAP_HEIGHT}`,
+                        inline: true
+                    }]
+                }]
+            };
+
+            try {
+                const response = await fetch(DISCORD_WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) {
+                    console.error(`Discord webhook failed with status: ${response.status}`);
+                }
+            } catch (error) {
+                console.error("Error sending data to Discord:", error);
+            }
+        }
+
         function resetGame() {
             if (document.pointerLockElement) document.exitPointerLock();
             if (audioStarted) {
@@ -598,7 +648,7 @@
                 case 'KeyM':
                     isMapVisible = !isMapVisible;
                     if (isMapVisible) {
-                        minimapWasOpened = true; // Flag that the map has been opened
+                        minimapWasOpened = true;
                     }
                     minimapCanvas.classList.toggle('hidden', !isMapVisible);
                     break;
@@ -626,7 +676,7 @@
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
-            if(gameWon) drawWinMap(); // Redraw map on resize
+            if(gameWon) drawWinMap();
         };
         
         gameContainer.addEventListener('click', () => {
